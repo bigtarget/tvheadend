@@ -1,6 +1,6 @@
 /*
  *  TV Input - DVB - Support functions
- *  Copyright (C) 2007 Andreas Öman
+ *  Copyright (C) 2007 Andreas ï¿½man
  *
  *  This program is free software: you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -98,7 +98,12 @@ dvb_get_string(char *dst, size_t dstlen, const uint8_t *src, size_t srclen, char
     return -1;
 
   case 0x01 ... 0x0b:
-    ic = convert_iso_8859[src[0] + 4];
+      if (src[0] + 4 == 2) {
+        ic = convert_iso_8859[2];
+      } else {
+        ic = convert_latin1;
+      }
+    //ic = convert_iso_8859[src[0] + 4];
     src++; srclen--;
     break;
 
@@ -131,7 +136,8 @@ dvb_get_string(char *dst, size_t dstlen, const uint8_t *src, size_t srclen, char
         ic = convert_latin1;
       }
     } else {
-      ic = convert_latin1;
+	ic = convert_iso_8859[2];
+      //ic = convert_latin1;
     }
     break;
   }
