@@ -15,7 +15,6 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-
 #ifndef TVHEADEND_H
 #define TVHEADEND_H
 
@@ -33,6 +32,9 @@
 #include "hts_strtab.h"
 
 #include "redblack.h"
+
+extern const char *tvheadend_version;
+extern const char *tvheadend_dataroot();
 
 #define PTS_UNSET INT64_C(0x8000000000000000)
 
@@ -163,11 +165,12 @@ typedef enum {
   SCT_MPEGTS,
   SCT_TEXTSUB,
   SCT_EAC3,
+  SCT_MP4A,
 } streaming_component_type_t;
 
 #define SCT_ISVIDEO(t) ((t) == SCT_MPEG2VIDEO || (t) == SCT_H264)
 #define SCT_ISAUDIO(t) ((t) == SCT_MPEG2AUDIO || (t) == SCT_AC3 || \
-                        (t) == SCT_AAC)
+                        (t) == SCT_AAC || (t) == SCT_MP4A)
 
 /**
  * The signal status of a tuner
@@ -399,7 +402,7 @@ extern void scopedunlock(pthread_mutex_t **mtxp);
 #define scopedlock(mtx) \
  pthread_mutex_t *scopedlock ## __LINE__ \
  __attribute__((cleanup(scopedunlock))) = mtx; \
- pthread_mutex_lock(mtx);
+ pthread_mutex_lock(scopedlock ## __LINE__);
 
 #define scopedgloballock() scopedlock(&global_lock)
 

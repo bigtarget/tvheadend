@@ -19,7 +19,6 @@
 #include <pthread.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <iconv.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -60,8 +59,6 @@
 #include "ffdecsa/FFdecsa.h"
 
 int running;
-extern const char *htsversion;
-extern const char *htsversion_full;
 time_t dispatch_clock;
 static LIST_HEAD(, gtimer) gtimers;
 pthread_mutex_t global_lock;
@@ -150,13 +147,15 @@ gtimer_disarm(gtimer_t *gti)
 static void
 usage(const char *argv0)
 {
-  printf("HTS Tvheadend %s\n", htsversion_full);
+  printf("HTS Tvheadend %s\n", tvheadend_version);
   printf("usage: %s [options]\n", argv0);
   printf("\n");
   printf(" -a <adapters>   Use only DVB adapters specified (csv)\n");
   printf(" -c <directory>  Alternate configuration path.\n"
 	 "                 Defaults to [$HOME/.hts/tvheadend]\n");
   printf(" -f              Fork and daemonize\n");
+  printf(" -p <pidfile>    Write pid to <pidfile> instead of /var/run/tvheadend.pid,\n"
+        "                 only works with -f\n");
   printf(" -u <username>   Run as user <username>, only works with -f\n");
   printf(" -g <groupname>  Run as group <groupname>, only works with -f\n");
   printf(" -C              If no useraccount exist then create one with\n"
@@ -228,6 +227,7 @@ main(int argc, char **argv)
   int c;
   int forkaway = 0;
   FILE *pidfile;
+  const char *pidpath = "/var/run/tvheadend.pid";
   struct group *grp;
   struct passwd *pw;
   const char *usernam = NULL;
@@ -246,7 +246,7 @@ main(int argc, char **argv)
   // make sure the timezone is set
   tzset();
 
-  while((c = getopt(argc, argv, "Aa:fu:g:c:Chdr:j:s")) != -1) {
+  while((c = getopt(argc, argv, "Aa:fp:u:g:c:Chdr:j:s")) != -1) {
     switch(c) {
     case 'a':
       adapter_mask = 0x0;
@@ -273,6 +273,9 @@ main(int argc, char **argv)
       break;
     case 'f':
       forkaway = 1;
+      break;
+    case 'p':
+      pidpath = optarg;
       break;
     case 'u':
       usernam = optarg;
@@ -314,8 +317,7 @@ main(int argc, char **argv)
     if(daemon(0, 0)) {
       exit(2);
     }
-
-    pidfile = fopen("/var/run/tvheadend.pid", "w+");
+    pidfile = fopen(pidpath, "w+");
     if(pidfile != NULL) {
       fprintf(pidfile, "%d\n", getpid());
       fclose(pidfile);
@@ -382,7 +384,7 @@ main(int argc, char **argv)
 #endif
   http_server_init();
 
-  webui_init(TVHEADEND_CONTENT_PATH);
+  webui_init(tvheadend_dataroot());
 
   serviceprobe_init();
 
@@ -426,9 +428,11 @@ main(int argc, char **argv)
   pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 
   tvhlog(LOG_NOTICE, "START", "HTS Tvheadend version %s started, "
-	 "running as PID:%d UID:%d GID:%d, settings located in '%s'",
-	 htsversion_full,
-	 getpid(), getuid(), getgid(), hts_settings_get_root());
+	 "running as PID:%d UID:%d GID:%d, settings located in '%s', "
+	 "dataroot: %s",
+	 tvheadend_version,
+	 getpid(), getuid(), getgid(), hts_settings_get_root(),
+	 tvheadend_dataroot() ?: "<Embedded file system>");
 
   if(crash)
     abort();

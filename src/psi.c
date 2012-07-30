@@ -307,8 +307,10 @@ psi_desc_ca(service_t *t, const uint8_t *buffer, int size)
     }
     break;
   case 0x4a00://DRECrypt
-    provid = size < 4 ? 0 : buffer[4];
-    break;
+    if (caid != 0x4aee) { // Bulcrypt
+      provid = size < 4 ? 0 : buffer[4];
+      break;
+    }
   default:
     provid = 0;
     break;
@@ -519,6 +521,10 @@ psi_parse_pmt(service_t *t, const uint8_t *ptr, int len, int chksvcid,
     case 0x81:
       hts_stream_type = SCT_AC3;
       break;
+    
+    case 0x0f:
+      hts_stream_type = SCT_MP4A;
+      break;
 
     case 0x11:
       hts_stream_type = SCT_AAC;
@@ -568,7 +574,9 @@ psi_parse_pmt(service_t *t, const uint8_t *ptr, int len, int chksvcid,
 	break;
 
       case DVB_DESC_AAC:
-	if(estype == 0x11)
+	if(estype == 0x0f)
+	  hts_stream_type = SCT_MP4A;
+	else if(estype == 0x11)
 	  hts_stream_type = SCT_AAC;
 	break;
 
@@ -592,7 +600,6 @@ psi_parse_pmt(service_t *t, const uint8_t *ptr, int len, int chksvcid,
       }
       len -= dlen; ptr += dlen; dllen -= dlen;
     }
-
     
     if(hts_stream_type == SCT_UNKNOWN && estype == 0x06 &&
        pid == 3401 && t->s_dvb_service_id == 10510) {
@@ -605,6 +612,11 @@ psi_parse_pmt(service_t *t, const uint8_t *ptr, int len, int chksvcid,
       if((st = service_stream_find(t, pid)) == NULL) {
 	update |= PMT_UPDATE_NEW_STREAM;
 	st = service_stream_create(t, pid, hts_stream_type);
+      }
+
+      // Jernej: I don't know why. But it seems that sometimes the stream is created with a wrong es_type??
+      if(st->es_type != hts_stream_type) {
+        st->es_type = hts_stream_type;
       }
 
       st->es_delete_me = 0;
@@ -736,6 +748,7 @@ psi_build_pmt(streaming_start_t *ss, uint8_t *buf0, int maxlen, int pcrpid)
       c = 0x06;
       break;
 
+    case SCT_MP4A:
     case SCT_AAC:
       c = 0x11;
       break;
@@ -764,6 +777,7 @@ psi_build_pmt(streaming_start_t *ss, uint8_t *buf0, int maxlen, int pcrpid)
 
     switch(ssc->ssc_type) {
     case SCT_MPEG2AUDIO:
+    case SCT_MP4A:
     case SCT_AAC:
       buf[0] = DVB_DESC_LANGUAGE;
       buf[1] = 4;
@@ -822,13 +836,23 @@ static struct strtab caidnametab[] = {
   { "Irdeto",           0x0600 }, 
   { "Irdeto",           0x0602 }, 
   { "Irdeto",           0x0604 }, 
+  { "Irdeto",		0x0624 },
+  { "Irdeto",		0x0666 },
   { "Jerroldgi",        0x0700 }, 
   { "Matra",            0x0800 }, 
   { "NDS",              0x0900 }, 
   { "Nokia",            0x0A00 }, 
   { "Conax",            0x0B00 }, 
   { "NTL",              0x0C00 }, 
-  { "CryptoWorks",      0x0D00 }, 
+  { "CryptoWorks",	0x0D00 },
+  { "CryptoWorks",	0x0D01 },
+  { "CryptoWorks",	0x0D02 },
+  { "CryptoWorks",	0x0D03 },
+  { "CryptoWorks",	0x0D05 },
+  { "CryptoWorks",	0x0D0F },
+  { "CryptoWorks",	0x0D70 },
+  { "CryptoWorks ICE",	0x0D96 },
+  { "CryptoWorks ICE",	0x0D97 },
   { "PowerVu",          0x0E00 }, 
   { "Sony",             0x0F00 }, 
   { "Tandberg",         0x1000 }, 
@@ -854,7 +878,9 @@ static struct strtab caidnametab[] = {
   { "GI",               0x4700 }, 
   { "Telemann",         0x4800 },
   { "DRECrypt",         0x4ae0 },
-  { "DRECrypt2",        0x4ae1 }
+  { "DRECrypt2",        0x4ae1 },
+  { "Bulcrypt",         0x4aee },
+  { "Bulcrypt",         0x5581 },
 };
 
 const char *
@@ -886,6 +912,7 @@ static struct strtab streamtypetab[] = {
   { "MPEGTS",     SCT_MPEGTS },
   { "TEXTSUB",    SCT_TEXTSUB },
   { "EAC3",       SCT_EAC3 },
+  { "AAC",       SCT_MP4A },
 };
 
 

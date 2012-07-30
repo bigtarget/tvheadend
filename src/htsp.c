@@ -50,7 +50,6 @@ static void *htsp_server;
 
 #define HTSP_PRIV_MASK (ACCESS_STREAMING)
 
-extern const char *htsversion;
 extern char *dvr_storage;
 
 LIST_HEAD(htsp_connection_list, htsp_connection);
@@ -218,6 +217,8 @@ htsp_flush_queue(htsp_connection_t *htsp, htsp_msg_q_t *hmq)
 {
   htsp_msg_t *hm;
 
+  pthread_mutex_lock(&htsp->htsp_out_mutex);
+
   if(hmq->hmq_length)
     TAILQ_REMOVE(&htsp->htsp_active_output_queues, hmq, hmq_link);
 
@@ -225,6 +226,7 @@ htsp_flush_queue(htsp_connection_t *htsp, htsp_msg_q_t *hmq)
     TAILQ_REMOVE(&hmq->hmq_q, hm, hm_link);
     htsp_msg_destroy(hm);
   }
+  pthread_mutex_unlock(&htsp->htsp_out_mutex);
 }
 
 
@@ -486,6 +488,36 @@ htsp_method_async(htsp_connection_t *htsp, htsmsg_t *in)
 
   return NULL;
 }
+
+/**
+ * Request a ticket for a http url pointing to a channel or dvr
+ */
+static htsmsg_t *
+htsp_method_getTicket(htsp_connection_t *htsp, htsmsg_t *in)
+{
+  htsmsg_t *out;
+  uint32_t id;
+  char path[255];
+  const char *ticket = NULL;
+
+  if(!htsmsg_get_u32(in, "channelId", &id)) {
+    snprintf(path, sizeof(path), "/stream/channelid/%d", id);
+    ticket = access_ticket_create(path);
+  } else if(!htsmsg_get_u32(in, "dvrId", &id)) {
+    snprintf(path, sizeof(path), "/dvrfile/%d", id);
+    ticket = access_ticket_create(path);
+  } else {
+    return htsp_error("Missing argument 'channelId' or 'dvrId'");
+  }
+
+  out = htsmsg_create_map();
+
+  htsmsg_add_str(out, "path", path);
+  htsmsg_add_str(out, "ticket", ticket);
+
+  return out;
+}
+
 
 /**
  * add a Dvrentry
@@ -1002,7 +1034,7 @@ htsp_method_hello(htsp_connection_t *htsp, htsmsg_t *in)
 
   htsmsg_add_u32(r, "htspversion", HTSP_PROTO_VERSION);
   htsmsg_add_str(r, "servername", "HTS Tvheadend");
-  htsmsg_add_str(r, "serverversion", htsversion);
+  htsmsg_add_str(r, "serverversion", tvheadend_version);
   htsmsg_add_bin(r, "challenge", htsp->htsp_challenge, 32);
 
   htsp_update_logname(htsp);
@@ -1034,6 +1066,7 @@ struct {
   { "cancelDvrEntry", htsp_method_cancelDvrEntry, ACCESS_RECORDER},
   { "deleteDvrEntry", htsp_method_deleteDvrEntry, ACCESS_RECORDER},
   { "epgQuery", htsp_method_epgQuery, ACCESS_STREAMING},
+  { "getTicket", htsp_method_getTicket, ACCESS_STREAMING},
 
 };
 
@@ -1496,7 +1529,7 @@ const static char frametypearray[PKT_NTYPES] = {
 static void
 htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
 {
-  htsmsg_t *m = htsmsg_create_map(), *n;
+  htsmsg_t *m, *n;
   htsp_msg_t *hm;
   htsp_connection_t *htsp = hs->hs_htsp;
   int64_t ts;
@@ -1512,6 +1545,8 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
     pkt_ref_dec(pkt);
     return;
   }
+
+  m = htsmsg_create_map();
  
   htsmsg_add_str(m, "method", "muxpkt");
   htsmsg_add_u32(m, "subscriptionId", hs->hs_sid);
@@ -1545,7 +1580,6 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
   htsp_send(htsp, m, pkt->pkt_payload, &hs->hs_q, pktbuf_len(pkt->pkt_payload));
 
   if(hs->hs_last_report != dispatch_clock) {
-    signal_status_t status;
 
     /* Send a queue and signal status report every second */
 
@@ -1579,26 +1613,6 @@ htsp_stream_deliver(htsp_subscription_t *hs, th_pkt_t *pkt)
     /* We use a special queue for queue status message so they're not
        blocked by anything else */
     htsp_send_message(hs->hs_htsp, m, &hs->hs_htsp->htsp_hmq_qstatus);
-
-
-    if(!service_get_signal_status(hs->hs_s->ths_service, &status)) {
-
-      m = htsmsg_create_map();
-      htsmsg_add_str(m, "method", "signalStatus");
-      htsmsg_add_u32(m, "subscriptionId", hs->hs_sid);
-
-      htsmsg_add_str(m, "feStatus",   status.status_text);
-      if(status.snr != -2)
-	htsmsg_add_u32(m, "feSNR",    status.snr);
-      if(status.signal != -2)
-	htsmsg_add_u32(m, "feSignal", status.signal);
-      if(status.ber != -2)
-	htsmsg_add_u32(m, "feBER",    status.ber);
-      if(status.unc != -2)
-	htsmsg_add_u32(m, "feUNC",    status.unc);
-      htsp_send_message(hs->hs_htsp, m, &hs->hs_htsp->htsp_hmq_qstatus);
-    }
-
   }
   pkt_ref_dec(pkt);
 }

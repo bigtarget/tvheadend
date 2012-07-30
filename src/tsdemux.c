@@ -110,11 +110,10 @@ ts_recv_packet0(service_t *t, elementary_stream_t *st, const uint8_t *tsb)
 			   got_section, st);
     break;
 
-  case SCT_TELETEXT:
-    teletext_input(t, st, tsb);
-    break;
-
   default:
+    if(st->es_type == SCT_TELETEXT)
+      teletext_input(t, st, tsb);
+
     if(off > 188)
       break;
 
@@ -142,8 +141,6 @@ ts_extract_pcr(service_t *t, elementary_stream_t *st, const uint8_t *tsb,
   pcr |= (uint64_t)tsb[9] << 1;
   pcr |= ((uint64_t)tsb[10] >> 7) & 0x01;
   
-  pcr = pcr;
-
   if(pcrp != NULL)
     *pcrp = pcr;
 

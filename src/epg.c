@@ -274,6 +274,9 @@ epg_event_destroy(event_t *e)
 {
   free(e->e_title);
   free(e->e_desc);
+  free(e->e_ext_desc);
+  free(e->e_ext_item);
+  free(e->e_ext_text);
   free(e->e_episode.ee_onscreen);
   LIST_REMOVE(e, e_global_link);
   free(e);
@@ -458,16 +461,18 @@ epg_erase_duplicates(event_t *e, channel_t *ch) {
 static int
 epg_event_cmp_overlap(event_t *e1, event_t *e2)
 {
+
+  int dur_a, dur_b, mindur;
+    
   if ((e1->e_title == NULL) || (e2->e_title == NULL))
     return 0;
-  
-  if ((e1->e_stop < e2->e_start) || (e2->e_stop < e1->e_start)) {
-    return 0;
-  } else {
-    if ((e1->e_start < e2->e_stop) && (e2->e_start < e1->e_stop)) {
-    if ((e1->e_stop - e2->e_start) > 60 || (e2->e_stop - e1->e_start) > 60)
-        return 1;
-    }
+    
+  dur_a = e1->e_stop - e1->e_start;
+  dur_b = e2->e_stop - e2->e_start;
+  mindur = dur_a < dur_b ? dur_a : dur_b;
+    
+  if ((abs(e1->e_start - e2->e_start) < mindur) && (abs(e1->e_stop - e2->e_stop) < mindur)) {
+    return 1;
   }
 
   return 0;

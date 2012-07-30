@@ -42,67 +42,18 @@
 #include "notify.h"
 #include "cwc.h"
 
-#define TDT_CRC           0x1
-#define TDT_QUICKREQ      0x2
-#define TDT_INC_TABLE_HDR 0x4
-
 static void dvb_table_add_pmt(th_dvb_mux_instance_t *tdmi, int pmt_pid);
 
 static int tdt_id_tally;
 
 /**
- *
- */
-typedef struct th_dvb_table {
-  /**
-   * Flags, must never be changed after creation.
-   * We inspect it without holding global_lock
-   */
-  int tdt_flags;
-
-  /**
-   * Cycle queue
-   * Tables that did not get a fd or filter in hardware will end up here
-   * waiting for any other table to be received so it can reuse that fd.
-   * Only linked if fd == -1
-   */
-  TAILQ_ENTRY(th_dvb_table) tdt_pending_link;
-
-  /**
-   * File descriptor for filter
-   */
-  int tdt_fd;
-
-  LIST_ENTRY(th_dvb_table) tdt_link;
-
-  char *tdt_name;
-
-  void *tdt_opaque;
-  int (*tdt_callback)(th_dvb_mux_instance_t *tdmi, uint8_t *buf, int len,
-		      uint8_t tableid, void *opaque);
-
-
-  int tdt_count;
-  int tdt_pid;
-
-  struct dmx_sct_filter_params *tdt_fparams;
-
-  int tdt_id;
-
-} th_dvb_table_t;
-
-
-
-
-/**
  * Helper for preparing a section filter parameter struct
  */
-static struct dmx_sct_filter_params *
+struct dmx_sct_filter_params *
 dvb_fparams_alloc(void)
 {
   return calloc(1, sizeof(struct dmx_sct_filter_params));
 }
-
 
 /**
  *
@@ -214,8 +165,9 @@ dvb_proc_table(th_dvb_mux_instance_t *tdmi, th_dvb_table_t *tdt, uint8_t *sec,
   ptr = &sec[3];
   if(chkcrc) len -= 4;   /* Strip trailing CRC */
 
-  if(tdt->tdt_flags & TDT_INC_TABLE_HDR)
-    ret = tdt->tdt_callback(tdmi, sec, len + 3, tableid, tdt->tdt_opaque);
+  if(tdt->tdt_flags & TDT_CA)
+    ret = tdt->tdt_callback((th_dvb_mux_instance_t *)tdt,
+                                sec, len + 3, tableid, tdt->tdt_opaque);
   else
     ret = tdt->tdt_callback(tdmi, ptr, len, tableid, tdt->tdt_opaque);
   
@@ -322,7 +274,7 @@ dvb_tdt_destroy(th_dvb_adapter_t *tda, th_dvb_mux_instance_t *tdmi,
 /**
  * Add a new DVB table
  */
-static void
+void
 tdt_add(th_dvb_mux_instance_t *tdmi, struct dmx_sct_filter_params *fparams,
 	int (*callback)(th_dvb_mux_instance_t *tdmi, uint8_t *buf, int len,
 			 uint8_t tableid, void *opaque), void *opaque,
@@ -330,8 +282,13 @@ tdt_add(th_dvb_mux_instance_t *tdmi, struct dmx_sct_filter_params *fparams,
 {
   th_dvb_table_t *t;
 
+  // Allow multiple entries per PID, but only one per callback/opaque instance
+  // TODO: this could mean reading the same data multiple times, and not
+  //       sure how well this will work! I know Andreas has some thoughts on
+  //       this
   LIST_FOREACH(t, &tdmi->tdmi_tables, tdt_link) {
-    if(pid == t->tdt_pid) {
+    if(pid == t->tdt_pid && 
+       t->tdt_callback == callback && t->tdt_opaque == opaque) {
       free(tdt);
       free(fparams);
       return;
@@ -411,9 +368,13 @@ dvb_desc_extended_event(uint8_t *ptr, int len,
     if ((desclen - strlen(desc)) > 2)
     {
       /* get description -> append to desc if space left */
-      strncat(desc, "\n", 1);
-      strncat(desc, (char*)(items+1), 
-          items[0] > (desclen - strlen(desc)) ? (desclen - strlen(desc)) : items[0]);
+      if (desc[0] != '\0')
+        strncat(desc, "\n", 1);
+      if((r = dvb_get_string_with_len(desc + strlen(desc),
+                                      desclen - strlen(desc),
+                                      items, (localptr + count) - items,
+                                      dvb_default_charset)) < 0)
+        return -1;
     }
 
     items += 1 + items[0];
@@ -422,9 +383,13 @@ dvb_desc_extended_event(uint8_t *ptr, int len,
     if ((itemlen - strlen(item)) > 2)
     {
       /* get item -> append to item if space left */
-      strncat(item, "\n", 1);
-      strncat(item, (char*)(items+1), 
-          items[0] > (itemlen - strlen(item)) ? (itemlen - strlen(item)) : items[0]);
+      if (item[0] != '\0')
+        strncat(item, "\n", 1);
+      if((r = dvb_get_string_with_len(item + strlen(item),
+                                      itemlen - strlen(item),
+                                      items, (localptr + count) - items,
+                                      dvb_default_charset)) < 0)
+        return -1;
     }
 
     /* go to next item */
@@ -820,7 +785,7 @@ static int
 dvb_ca_callback(th_dvb_mux_instance_t *tdmi, uint8_t *ptr, int len,
 		uint8_t tableid, void *opaque)
 {
-  cwc_emm(ptr, len);
+  cwc_emm(ptr, len, (uintptr_t)opaque, (void *)tdmi);
   return 0;
 }
 
@@ -833,6 +798,7 @@ dvb_cat_callback(th_dvb_mux_instance_t *tdmi, uint8_t *ptr, int len,
 {
   int tag, tlen;
   uint16_t pid;
+  uintptr_t caid;
 
   if((ptr[2] & 1) == 0) {
     /* current_next_indicator == next, skip this */
@@ -848,14 +814,14 @@ dvb_cat_callback(th_dvb_mux_instance_t *tdmi, uint8_t *ptr, int len,
     len -= 2;
     switch(tag) {
     case DVB_DESC_CA:
-      //      caid = ( ptr[0]         << 8) | ptr[1];
+      caid = ( ptr[0]         << 8) | ptr[1];
       pid  = ((ptr[2] & 0x1f) << 8) | ptr[3];
 
       if(pid == 0)
 	break;
 
-      tdt_add(tdmi, NULL, dvb_ca_callback, NULL, "CA", 
-	      TDT_INC_TABLE_HDR, pid, NULL);
+      tdt_add(tdmi, NULL, dvb_ca_callback, (void *)caid, "CA", 
+	      TDT_CA, pid, NULL);
       break;
 
     default:
@@ -938,7 +904,7 @@ dvb_table_cable_delivery(th_dvb_mux_instance_t *tdmi, uint8_t *ptr, int len,
   dmc.dmc_fe_params.u.qam.fec_inner = fec_tab[ptr[10] & 0x07];
 
   dvb_mux_create(tdmi->tdmi_adapter, &dmc, tsid, NULL,
-		 "automatic mux discovery", 1, 1, NULL);
+		 "automatic mux discovery", 1, 1, NULL, NULL);
   return 0;
 }
 
@@ -1023,7 +989,7 @@ dvb_table_sat_delivery(th_dvb_mux_instance_t *tdmi, uint8_t *ptr, int len,
 
 #endif
   dvb_mux_create(tdmi->tdmi_adapter, &dmc, tsid, NULL,
-		 "automatic mux discovery", 1, 1, NULL);
+		 "automatic mux discovery", 1, 1, NULL, NULL);
   
   return 0;
 }
